@@ -11,16 +11,12 @@ make
 ```
 
 ## Running
-Before running, create three directories :
+Before running, create two more directories under test/ :
 ```bash
 cd ~/mini-unionfs
-mkdir -p test/lower test/upper test/mnt
+mkdir -p test/upper test/mnt
 ```
-And add some basic text files :
-```bash
-echo "Hello from lower" > test/lower/base.txt
-echo "delete me" > test/lower/delete_me.txt
-```
+
 Then run:
 ```bash
 ./mini_unionfs test/lower test/upper test/mnt [-f]
