@@ -11,9 +11,19 @@ make
 ```
 
 ## Running
-
+Before running, create three directories :
 ```bash
-./mini_unionfs <lower_dir> <upper_dir> <mount_point> [-f]
+cd ~/mini-unionfs
+mkdir -p test/lower test/upper test/mnt
+```
+And add some basic text files :
+```bash
+echo "Hello from lower" > test/lower/base.txt
+echo "delete me" > test/lower/delete_me.txt
+```
+Then run:
+```bash
+./mini_unionfs test/lower test/upper test/mnt [-f]
 # -f runs in foreground (recommended while developing)
 ```
 
