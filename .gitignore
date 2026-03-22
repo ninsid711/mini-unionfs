@@ -1,0 +1,14 @@
+# Build output
+mini_unionfs
+*.o
+
+# Test environment
+unionfs_test_env/
+test/
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+*.swp
