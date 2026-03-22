@@ -32,8 +32,7 @@ make test
 ## Unmounting
 
 ```bash
-make umount
-# or manually: fusermount3 -u <mount_point>
+make clean
 ```
 
 ## Work Distribution
