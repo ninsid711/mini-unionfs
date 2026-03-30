@@ -420,10 +420,10 @@ static int unionfs_release(const char *path, struct fuse_file_info *fi)
  * ============================================================= */
 
 static struct fuse_operations unionfs_oper = {
-    /* -- Member 1 -- */
+    /* -- Member 1: -- */
     .getattr    = unionfs_getattr,
 
-    /* -- MEMBER 2: Commit 4 — read/write/release now registered -- */
+    /* -- MEMBER 2: -- */
     .open       = unionfs_open,
     .read       = unionfs_read,
     .write      = unionfs_write,
