@@ -43,59 +43,20 @@
 
 /* =============================================================
  * SECTION 2 — Path Helpers
- *
- * These four functions are the foundation that every other
- * team member builds on. Understand them before writing any
- * FUSE callback.
  * ============================================================= */
 
-/*
- * upper_path()
- * Concatenates upper_dir + virtual path -> real on-disk path.
- *
- * Does NOT check existence. Use when you intend to create a
- * new file in the upper layer (Member 2 CoW, Member 4 create).
- *
- * Example:
- *   upper_path("/config.txt", buf)
- *   buf == "/abs/upper/config.txt"
- */
 void upper_path(const char *path, char *out)
 {
     snprintf(out, PATH_MAX, "%s%s", UNIONFS_DATA->upper_dir, path);
 }
 
-/*
- * lower_path()
- * Concatenates lower_dir + virtual path -> real on-disk path.
- */
 void lower_path(const char *path, char *out)
 {
     snprintf(out, PATH_MAX, "%s%s", UNIONFS_DATA->lower_dir, path);
 }
 
-/*
- * whiteout_path()
- * Builds the whiteout marker path for a given virtual path.
- *
- * A whiteout file signals "this file was deleted from the lower
- * layer". It lives in the upper layer beside the deleted file:
- *   virtual  /foo/bar.txt
- *   whiteout upper_dir/foo/.wh.bar.txt
- *
- * Used by:
- *   - resolve_path() to detect deletions
- *   - Member 4's unionfs_unlink() to create markers
- */
 void whiteout_path(const char *path, char *out)
 {
-    /*
-     * We need to split path into directory and filename parts
-     * because the whiteout file sits in the same directory as
-     * the original, with ".wh." prepended to the filename.
-     *
-     * dirname/basename modify their argument, so we copy first.
-     */
     char tmp_dir[PATH_MAX];
     char tmp_base[PATH_MAX];
     strncpy(tmp_dir,  path, PATH_MAX - 1);
@@ -103,16 +64,9 @@ void whiteout_path(const char *path, char *out)
     tmp_dir[PATH_MAX - 1]  = '\0';
     tmp_base[PATH_MAX - 1] = '\0';
 
-    char *dir  = dirname(tmp_dir);    /* e.g. "/foo"     */
-    char *base = basename(tmp_base);  /* e.g. "bar.txt"  */
+    char *dir  = dirname(tmp_dir);
+    char *base = basename(tmp_base);
 
-    /*
-     * Edge case: path == "/" -> dirname returns "/", basename
-     * returns "/". Guard against constructing "/.wh./" which
-     * would be nonsensical. resolve_path() already returns
-     * -ENOENT for "/" so this path is never reached in practice,
-     * but we protect it here for correctness.
-     */
     if (strcmp(base, "/") == 0 || strcmp(base, ".") == 0) {
         snprintf(out, PATH_MAX, "%s/.wh.%s", UNIONFS_DATA->upper_dir, base);
         return;
@@ -122,71 +76,21 @@ void whiteout_path(const char *path, char *out)
              UNIONFS_DATA->upper_dir, dir, base);
 }
 
-/*
- * is_whiteout_name()
- * Returns 1 if `filename` is a whiteout marker, 0 otherwise.
- *
- * Used by Member 3's readdir to hide whiteout entries from the
- * merged directory listing shown to the user.
- *
- * Example:
- *   is_whiteout_name(".wh.config.txt") == 1
- *   is_whiteout_name("config.txt")     == 0
- */
 int is_whiteout_name(const char *filename)
 {
     return strncmp(filename, ".wh.", 4) == 0;
 }
 
-/*
- * resolve_path()
- *
- * THE central function. Maps a virtual path (as the user sees it)
- * to a real on-disk path, implementing the three-layer lookup:
- *
- *   Step 1 — Whiteout check
- *     If upper_dir contains a .wh.<filename> marker, the file
- *     was deliberately deleted. Return -ENOENT immediately.
- *
- *   Step 2 — Upper layer
- *     If the file exists in upper_dir, return that path.
- *     The upper layer always shadows the lower layer.
- *
- *   Step 3 — Lower layer
- *     If the file exists in lower_dir, return that path.
- *
- *   Step 4 — Not found
- *     Return -ENOENT.
- *
- * Parameters:
- *   path     - virtual path, e.g. "/config.txt" or "/subdir/a.txt"
- *   resolved - output buffer, must be PATH_MAX bytes
- *
- * Returns:
- *   0       on success; `resolved` holds the real path
- *   -ENOENT file is whiteout'd, or simply does not exist
- *
- * Called by: getattr (Member 1), open/read/write (Member 2),
- *            readdir (Member 3), unlink/create (Member 4)
- */
 int resolve_path(const char *path, char *resolved)
 {
     struct stat st;
 
-    /* ----------------------------------------------------------
-     * Step 1: Whiteout check
-     * Build upper_dir/dir/.wh.filename and stat it.
-     * If it exists, the file was deleted — report ENOENT.
-     * ---------------------------------------------------------- */
     char wh[PATH_MAX];
     whiteout_path(path, wh);
     if (lstat(wh, &st) == 0) {
         return -ENOENT;
     }
 
-    /* ----------------------------------------------------------
-     * Step 2: Upper layer
-     * ---------------------------------------------------------- */
     char up[PATH_MAX];
     upper_path(path, up);
     if (lstat(up, &st) == 0) {
@@ -195,9 +99,6 @@ int resolve_path(const char *path, char *resolved)
         return 0;
     }
 
-    /* ----------------------------------------------------------
-     * Step 3: Lower layer
-     * ---------------------------------------------------------- */
     char lo[PATH_MAX];
     lower_path(path, lo);
     if (lstat(lo, &st) == 0) {
@@ -211,51 +112,29 @@ int resolve_path(const char *path, char *resolved)
 
 
 /* =============================================================
- * SECTION 3 — getattr (Member 1's FUSE callback)
- *
- * FUSE calls getattr() before almost every other operation —
- * it is the equivalent of stat(). If this returns wrong data,
- * nothing else works correctly.
- *
- * Our job: resolve the virtual path and call lstat() on the
- * real file. If it's whiteout'd or missing, return -ENOENT.
+ * SECTION 3 — getattr (Member 1)
  * ============================================================= */
 
 static int unionfs_getattr(const char *path, struct stat *stbuf,
                            struct fuse_file_info *fi)
 {
-    (void) fi;  /* unused in our implementation */
+    (void) fi;
 
-    /*
-     * Zero the stat buffer first. FUSE may inspect fields we
-     * don't explicitly set (e.g. st_dev, st_blksize), and
-     * leaving them uninitialised can cause subtle bugs.
-     */
     memset(stbuf, 0, sizeof(struct stat));
 
-    /*
-     * Special case: the root of the mount point.
-     * resolve_path("/") resolves to upper_dir itself, which is
-     * correct — but we handle it explicitly to be safe and to
-     * always present the mount root as a readable directory.
-     */
     if (strcmp(path, "/") == 0) {
         stbuf->st_mode  = S_IFDIR | 0755;
         stbuf->st_nlink = 2;
         return 0;
     }
 
-    /* Resolve the virtual path to a real on-disk path */
     char rpath[PATH_MAX];
     int res = resolve_path(path, rpath);
-    if (res != 0) {
-        return res;     /* -ENOENT: whiteout'd or not found */
-    }
+    if (res != 0)
+        return res;
 
-    /* Stat the real file and copy result into stbuf */
-    if (lstat(rpath, stbuf) == -1) {
+    if (lstat(rpath, stbuf) == -1)
         return -errno;
-    }
 
     return 0;
 }
@@ -263,14 +142,6 @@ static int unionfs_getattr(const char *path, struct stat *stbuf,
 
 /* =============================================================
  * SECTION 3B — Member 2: File Access & Copy-on-Write
- *
- * This section implements all file access operations:
- *   - ensure_upper_dir_exists()  helper: mkdir -p for upper layer
- *   - cow_copy_to_upper()        helper: copies file lower -> upper
- *   - unionfs_open()             FUSE callback: open a file
- *   - unionfs_read()             FUSE callback: read file contents
- *   - unionfs_write()            FUSE callback: write with CoW
- *   - unionfs_release()          FUSE callback: close a file
  * ============================================================= */
 
 /* ---------------------------------------------------------------
@@ -285,28 +156,21 @@ static int unionfs_getattr(const char *path, struct stat *stbuf,
  *
  * Parameters:
  *   upath - full upper-layer path of the FILE to be created
- *           e.g. "/home/shimona/mini-unionfs/test/upper/subdir/foo.txt"
  *
  * Returns: 0 on success, -errno on failure
  * --------------------------------------------------------------- */
 static int ensure_upper_dir_exists(const char *upath)
 {
-    /* Work on a mutable copy since dirname() modifies its input */
     char tmp[PATH_MAX];
     strncpy(tmp, upath, PATH_MAX - 1);
     tmp[PATH_MAX - 1] = '\0';
 
-    /* Get parent directory of the target file */
     char *parent = dirname(tmp);
 
     char build[PATH_MAX];
     strncpy(build, parent, PATH_MAX - 1);
     build[PATH_MAX - 1] = '\0';
 
-    /*
-     * Walk path from root, calling mkdir at each '/' boundary.
-     * Skip leading '/' since root always exists.
-     */
     char *p = build + 1;
     while (*p) {
         if (*p == '/') {
@@ -318,7 +182,6 @@ static int ensure_upper_dir_exists(const char *upath)
         p++;
     }
 
-    /* Create the final directory component */
     if (mkdir(build, 0755) == -1 && errno != EEXIST)
         return -errno;
 
@@ -349,20 +212,17 @@ static int ensure_upper_dir_exists(const char *upath)
 static int cow_copy_to_upper(const char *path)
 {
     char lo[PATH_MAX], up[PATH_MAX];
-    lower_path(path, lo);   /* real path in lower layer */
-    upper_path(path, up);   /* real path in upper layer */
+    lower_path(path, lo);
+    upper_path(path, up);
 
-    /* Step 2: ensure upper's parent directory exists */
     int ret = ensure_upper_dir_exists(up);
     if (ret != 0)
         return ret;
 
-    /* Step 3: open the source file in lower layer */
     int src_fd = open(lo, O_RDONLY);
     if (src_fd == -1)
         return -errno;
 
-    /* Step 4: stat the source to preserve permissions */
     struct stat st;
     if (fstat(src_fd, &st) == -1) {
         int err = errno;
@@ -370,7 +230,6 @@ static int cow_copy_to_upper(const char *path)
         return -err;
     }
 
-    /* Step 5: create destination file in upper layer */
     int dst_fd = open(up, O_WRONLY | O_CREAT | O_TRUNC, st.st_mode);
     if (dst_fd == -1) {
         int err = errno;
@@ -378,7 +237,6 @@ static int cow_copy_to_upper(const char *path)
         return -err;
     }
 
-    /* Step 6: copy data in 64 KiB chunks */
     char buf[65536];
     ssize_t n;
     while ((n = read(src_fd, buf, sizeof(buf))) > 0) {
@@ -395,35 +253,84 @@ static int cow_copy_to_upper(const char *path)
         }
     }
 
-    /* Step 7: close both fds */
     close(src_fd);
     close(dst_fd);
+    return 0;
+}
+
+/* ---------------------------------------------------------------
+ * unionfs_open()
+ *
+ * Called by FUSE when a user opens a file (e.g. cat, echo, vim).
+ *
+ * Logic:
+ *   1. Resolve virtual path to find where the file lives
+ *   2. If write is requested AND file is in lower layer:
+ *      trigger Copy-on-Write so we always write to upper
+ *   3. Open the real file and store fd in fi->fh so
+ *      read/write/release can use it without re-resolving
+ *
+ * fi->fh stores the real fd (cast to uint64_t).
+ * This is the standard FUSE pattern for per-file state.
+ *
+ * Returns: 0 on success, -errno on failure
+ * --------------------------------------------------------------- */
+static int unionfs_open(const char *path, struct fuse_file_info *fi)
+{
+    /* Step 1: find where the file currently lives */
+    char rpath[PATH_MAX];
+    int ret = resolve_path(path, rpath);
+    if (ret != 0)
+        return ret;
+
+    /* Step 2: if any write flag is set, ensure file is in upper */
+    int write_requested = (fi->flags & O_ACCMODE) != O_RDONLY;
+
+    if (write_requested) {
+        const char *upper_dir = UNIONFS_DATA->upper_dir;
+
+        /*
+         * Check if file is in lower by seeing if rpath
+         * does NOT start with upper_dir.
+         */
+        int in_lower = (strncmp(rpath, upper_dir, strlen(upper_dir)) != 0);
+
+        if (in_lower) {
+            /*
+             * File only exists in lower (read-only) layer.
+             * Copy it to upper first (Copy-on-Write),
+             * then open the upper copy for writing.
+             */
+            ret = cow_copy_to_upper(path);
+            if (ret != 0)
+                return ret;
+
+            /* Point rpath to the new upper copy */
+            upper_path(path, rpath);
+        }
+    }
+
+    /* Step 3: open the real file with original flags */
+    int fd = open(rpath, fi->flags);
+    if (fd == -1)
+        return -errno;
+
+    /* Store fd in fi->fh for use by read/write/release */
+    fi->fh = (uint64_t) fd;
     return 0;
 }
 
 
 /* =============================================================
  * SECTION 4 — fuse_operations table
- *
- * This is the vtable that libfuse uses to dispatch kernel
- * requests to our callbacks.
- *
- * Member 1 owns: .getattr
- * Member 2 adds: .open, .read, .write
- * Member 3 adds: .readdir
- * Member 4 adds: .create, .unlink, .mkdir, .rmdir
- *
- * To register your callback, add a line here:
- *   .open = unionfs_open,
- * and implement unionfs_open() in this file.
  * ============================================================= */
 
 static struct fuse_operations unionfs_oper = {
     /* -- Member 1 -- */
     .getattr    = unionfs_getattr,
 
-    /* -- MEMBER 2: uncomment and implement these -- */
-    /* .open    = unionfs_open,   */
+    /* -- MEMBER 2: open registered, read/write coming next -- */
+    .open       = unionfs_open,
     /* .read    = unionfs_read,   */
     /* .write   = unionfs_write,  */
 
@@ -439,7 +346,7 @@ static struct fuse_operations unionfs_oper = {
 
 
 /* =============================================================
- * SECTION 5 — main() : Filesystem Initialization
+ * SECTION 5 — main()
  * ============================================================= */
 
 int main(int argc, char *argv[])
