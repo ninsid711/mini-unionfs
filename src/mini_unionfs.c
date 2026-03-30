@@ -320,6 +320,100 @@ static int unionfs_open(const char *path, struct fuse_file_info *fi)
     return 0;
 }
 
+/* ---------------------------------------------------------------
+ * unionfs_read()                               [COMMIT 4]
+ *
+ * Called by FUSE when a user reads from an open file
+ * (e.g. cat, fread, read()).
+ *
+ * Because unionfs_open() already resolved the correct layer
+ * (upper or lower) and stored the real fd in fi->fh, we simply
+ * delegate to pread() here — no path resolution needed.
+ *
+ * pread() reads 'size' bytes starting at 'offset' without
+ * changing the file's current seek position.
+ *
+ * Parameters:
+ *   path   - virtual path (unused; fd in fi->fh is sufficient)
+ *   buf    - output buffer to fill
+ *   size   - number of bytes requested
+ *   offset - byte offset to start reading from
+ *   fi     - fi->fh holds the real fd from unionfs_open()
+ *
+ * Returns: number of bytes actually read, or -errno on failure
+ * --------------------------------------------------------------- */
+static int unionfs_read(const char *path, char *buf, size_t size,
+                        off_t offset, struct fuse_file_info *fi)
+{
+    (void) path;    /* fd in fi->fh is all we need */
+
+    ssize_t res = pread((int) fi->fh, buf, size, offset);
+    if (res == -1)
+        return -errno;
+
+    return (int) res;
+}
+
+/* ---------------------------------------------------------------
+ * unionfs_write()                              [COMMIT 4]
+ *
+ * Called by FUSE when a user writes to an open file
+ * (e.g. echo "x" > file, fwrite(), write()).
+ *
+ * unionfs_open() already performed Copy-on-Write if the file
+ * was in the lower layer, so fi->fh ALWAYS points to a file
+ * in the upper (writable) layer by the time we get here.
+ *
+ * We delegate to pwrite() which writes at the given offset
+ * without changing the file's seek position.
+ *
+ * Parameters:
+ *   path   - virtual path (unused; fd in fi->fh is sufficient)
+ *   buf    - data to write
+ *   size   - number of bytes to write
+ *   offset - byte offset to write at
+ *   fi     - fi->fh holds the real fd from unionfs_open()
+ *
+ * Returns: number of bytes actually written, or -errno on failure
+ * --------------------------------------------------------------- */
+static int unionfs_write(const char *path, const char *buf, size_t size,
+                         off_t offset, struct fuse_file_info *fi)
+{
+    (void) path;    /* fd in fi->fh is all we need */
+
+    ssize_t res = pwrite((int) fi->fh, buf, size, offset);
+    if (res == -1)
+        return -errno;
+
+    return (int) res;
+}
+
+/* ---------------------------------------------------------------
+ * unionfs_release()                            [COMMIT 4]
+ *
+ * Called by FUSE when the last reference to an open file is
+ * closed (i.e. the final close() call from userspace).
+ *
+ * We simply close the real fd that unionfs_open() stored in
+ * fi->fh to avoid leaking file descriptors.
+ *
+ * Note: FUSE ignores the return value of release(), but we
+ * return 0 by convention.
+ *
+ * Parameters:
+ *   path - virtual path (unused)
+ *   fi   - fi->fh holds the real fd to close
+ *
+ * Returns: 0 always
+ * --------------------------------------------------------------- */
+static int unionfs_release(const char *path, struct fuse_file_info *fi)
+{
+    (void) path;
+
+    close((int) fi->fh);
+    return 0;
+}
+
 
 /* =============================================================
  * SECTION 4 — fuse_operations table
@@ -329,10 +423,11 @@ static struct fuse_operations unionfs_oper = {
     /* -- Member 1 -- */
     .getattr    = unionfs_getattr,
 
-    /* -- MEMBER 2: open registered, read/write coming next -- */
+    /* -- MEMBER 2: Commit 4 — read/write/release now registered -- */
     .open       = unionfs_open,
-    /* .read    = unionfs_read,   */
-    /* .write   = unionfs_write,  */
+    .read       = unionfs_read,
+    .write      = unionfs_write,
+    .release    = unionfs_release,
 
     /* -- MEMBER 3: uncomment and implement this -- */
     /* .readdir = unionfs_readdir, */
