@@ -259,28 +259,148 @@ static int unionfs_getattr(const char *path, struct stat *stbuf,
 
     return 0;
 }
+
+
 /* =============================================================
  * SECTION 3B — Member 2: File Access & Copy-on-Write
+ *
+ * This section implements all file access operations:
+ *   - ensure_upper_dir_exists()  helper: mkdir -p for upper layer
+ *   - cow_copy_to_upper()        helper: copies file lower -> upper
+ *   - unionfs_open()             FUSE callback: open a file
+ *   - unionfs_read()             FUSE callback: read file contents
+ *   - unionfs_write()            FUSE callback: write with CoW
+ *   - unionfs_release()          FUSE callback: close a file
  * ============================================================= */
 
 /* ---------------------------------------------------------------
  * HELPER — ensure_upper_dir_exists()
  *
  * When copying a file to the upper layer, its parent directory
- * must already exist. This function creates the full directory
- * tree inside upper_dir (like mkdir -p).
+ * must already exist. For example, to CoW /subdir/foo.txt,
+ * upper/subdir/ must exist first.
+ *
+ * This walks the path component by component and calls mkdir()
+ * at each level — exactly like "mkdir -p". EEXIST is not an error.
  *
  * Parameters:
- *   upath - full upper-layer path of the file to be created
+ *   upath - full upper-layer path of the FILE to be created
+ *           e.g. "/home/shimona/mini-unionfs/test/upper/subdir/foo.txt"
  *
  * Returns: 0 on success, -errno on failure
  * --------------------------------------------------------------- */
 static int ensure_upper_dir_exists(const char *upath)
 {
-    /* TODO: implement in next commit */
-    (void) upath;
+    /* Work on a mutable copy since dirname() modifies its input */
+    char tmp[PATH_MAX];
+    strncpy(tmp, upath, PATH_MAX - 1);
+    tmp[PATH_MAX - 1] = '\0';
+
+    /* Get parent directory of the target file */
+    char *parent = dirname(tmp);
+
+    char build[PATH_MAX];
+    strncpy(build, parent, PATH_MAX - 1);
+    build[PATH_MAX - 1] = '\0';
+
+    /*
+     * Walk path from root, calling mkdir at each '/' boundary.
+     * Skip leading '/' since root always exists.
+     */
+    char *p = build + 1;
+    while (*p) {
+        if (*p == '/') {
+            *p = '\0';
+            if (mkdir(build, 0755) == -1 && errno != EEXIST)
+                return -errno;
+            *p = '/';
+        }
+        p++;
+    }
+
+    /* Create the final directory component */
+    if (mkdir(build, 0755) == -1 && errno != EEXIST)
+        return -errno;
+
     return 0;
 }
+
+/* ---------------------------------------------------------------
+ * HELPER — cow_copy_to_upper()
+ *
+ * Copy-on-Write: copies a file from the read-only lower layer
+ * into the read-write upper layer before any modification.
+ * This ensures the lower original is NEVER touched.
+ *
+ * Steps:
+ *   1. Build lower and upper real paths from virtual path
+ *   2. Ensure parent directory exists in upper layer
+ *   3. Open lower file for reading
+ *   4. Stat lower file to preserve its permissions
+ *   5. Create upper file with same permissions
+ *   6. Copy content in 64 KiB chunks
+ *   7. Close both file descriptors
+ *
+ * Parameters:
+ *   path - virtual path, e.g. "/hello.txt"
+ *
+ * Returns: 0 on success, -errno on failure
+ * --------------------------------------------------------------- */
+static int cow_copy_to_upper(const char *path)
+{
+    char lo[PATH_MAX], up[PATH_MAX];
+    lower_path(path, lo);   /* real path in lower layer */
+    upper_path(path, up);   /* real path in upper layer */
+
+    /* Step 2: ensure upper's parent directory exists */
+    int ret = ensure_upper_dir_exists(up);
+    if (ret != 0)
+        return ret;
+
+    /* Step 3: open the source file in lower layer */
+    int src_fd = open(lo, O_RDONLY);
+    if (src_fd == -1)
+        return -errno;
+
+    /* Step 4: stat the source to preserve permissions */
+    struct stat st;
+    if (fstat(src_fd, &st) == -1) {
+        int err = errno;
+        close(src_fd);
+        return -err;
+    }
+
+    /* Step 5: create destination file in upper layer */
+    int dst_fd = open(up, O_WRONLY | O_CREAT | O_TRUNC, st.st_mode);
+    if (dst_fd == -1) {
+        int err = errno;
+        close(src_fd);
+        return -err;
+    }
+
+    /* Step 6: copy data in 64 KiB chunks */
+    char buf[65536];
+    ssize_t n;
+    while ((n = read(src_fd, buf, sizeof(buf))) > 0) {
+        ssize_t written = 0;
+        while (written < n) {
+            ssize_t w = write(dst_fd, buf + written, n - written);
+            if (w == -1) {
+                int err = errno;
+                close(src_fd);
+                close(dst_fd);
+                return -err;
+            }
+            written += w;
+        }
+    }
+
+    /* Step 7: close both fds */
+    close(src_fd);
+    close(dst_fd);
+    return 0;
+}
+
 
 /* =============================================================
  * SECTION 4 — fuse_operations table
@@ -320,24 +440,10 @@ static struct fuse_operations unionfs_oper = {
 
 /* =============================================================
  * SECTION 5 — main() : Filesystem Initialization
- *
- * Responsibilities:
- *   1. Validate arguments (lower_dir, upper_dir, mount_point)
- *   2. Resolve lower_dir and upper_dir to absolute paths
- *      (FUSE changes the working directory internally, so
- *       relative paths break inside callbacks)
- *   3. Shift argv so FUSE only sees its own arguments
- *   4. Hand off to fuse_main()
  * ============================================================= */
 
 int main(int argc, char *argv[])
 {
-    /* --------------------------------------------------------
-     * Argument validation
-     * Expected: ./mini_unionfs <lower_dir> <upper_dir> <mnt>
-     * FUSE also accepts its own flags after the mount point,
-     * e.g. -f (foreground), -d (debug), -s (single-threaded).
-     * -------------------------------------------------------- */
     if (argc < 4) {
         fprintf(stderr,
             "\nUsage: %s <lower_dir> <upper_dir> <mount_point> [fuse_options]\n"
@@ -353,9 +459,6 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    /* --------------------------------------------------------
-     * Allocate global state
-     * -------------------------------------------------------- */
     struct mini_unionfs_state *state =
         malloc(sizeof(struct mini_unionfs_state));
 
@@ -364,17 +467,6 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    /* --------------------------------------------------------
-     * Resolve lower_dir and upper_dir to absolute paths.
-     *
-     * WHY: fuse_main() calls daemon() internally (unless -f is
-     * passed), which changes the process's working directory to
-     * "/". Any relative paths stored in state would then point
-     * to the wrong location inside FUSE callbacks.
-     *
-     * realpath() resolves symlinks and ".." components as well,
-     * which prevents path traversal surprises.
-     * -------------------------------------------------------- */
     state->lower_dir = realpath(argv[1], NULL);
     state->upper_dir = realpath(argv[2], NULL);
 
@@ -392,43 +484,16 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    /* --------------------------------------------------------
-     * Print startup info (useful during development)
-     * -------------------------------------------------------- */
     fprintf(stderr, "\n[mini_unionfs] starting up\n");
     fprintf(stderr, "  lower (read-only) : %s\n", state->lower_dir);
     fprintf(stderr, "  upper (read-write): %s\n", state->upper_dir);
     fprintf(stderr, "  mount point       : %s\n", argv[3]);
     fprintf(stderr, "  tip: pass -f to run in foreground for easier debugging\n\n");
 
-    /* --------------------------------------------------------
-     * Shift argv so FUSE sees: argv[0] <mount_point> [opts]
-     *
-     * Our custom arguments (lower_dir at [1], upper_dir at [2])
-     * are consumed above. FUSE must only see the mount point and
-     * any of its own flags. We do this by overwriting argv[1]
-     * with the mount point and reducing argc by 2.
-     *
-     * Before: ./mini_unionfs lower upper mnt -f
-     *          argv[0]       [1]   [2]   [3] [4]   argc=5
-     *
-     * After (what FUSE sees):
-     *         ./mini_unionfs mnt -f
-     *          argv[0]       [1] [2]                argc=3
-     * -------------------------------------------------------- */
-    // argv[1] = argv[3];  /* mount_point moves to position 1 */
     for (int i = 1; i < argc - 2; i++) {
         argv[i] = argv[i + 2];
     }
-    argc   -= 2;        /* drop lower_dir and upper_dir     */
+    argc -= 2;
 
-    /*
-     * fuse_main() takes over from here:
-     *   - mounts the filesystem at mount_point
-     *   - enters the request dispatch loop
-     *   - calls our callbacks (unionfs_oper) for each request
-     *   - state is passed as private_data, retrievable via
-     *     UNIONFS_DATA inside every callback
-     */
     return fuse_main(argc, argv, &unionfs_oper, state);
 }
