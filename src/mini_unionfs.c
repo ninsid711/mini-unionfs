@@ -259,7 +259,28 @@ static int unionfs_getattr(const char *path, struct stat *stbuf,
 
     return 0;
 }
+/* =============================================================
+ * SECTION 3B — Member 2: File Access & Copy-on-Write
+ * ============================================================= */
 
+/* ---------------------------------------------------------------
+ * HELPER — ensure_upper_dir_exists()
+ *
+ * When copying a file to the upper layer, its parent directory
+ * must already exist. This function creates the full directory
+ * tree inside upper_dir (like mkdir -p).
+ *
+ * Parameters:
+ *   upath - full upper-layer path of the file to be created
+ *
+ * Returns: 0 on success, -errno on failure
+ * --------------------------------------------------------------- */
+static int ensure_upper_dir_exists(const char *upath)
+{
+    /* TODO: implement in next commit */
+    (void) upath;
+    return 0;
+}
 
 /* =============================================================
  * SECTION 4 — fuse_operations table
