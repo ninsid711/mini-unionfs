@@ -53,4 +53,16 @@ void lower_path(const char *path, char *out);
 void whiteout_path(const char *path, char *out);
 int  is_whiteout_name(const char *filename);
 
+/*
+ Directory operations (Member 3)
+ Implemented in dir_ops.c
+ */
+
+int unionfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
+                    off_t offset, struct fuse_file_info *fi);
+
+int unionfs_mkdir(const char *path, mode_t mode);
+
+int unionfs_rmdir(const char *path);
+
 #endif /* MINI_UNIONFS_H */
