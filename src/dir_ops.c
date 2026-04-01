@@ -94,3 +94,17 @@ int unionfs_mkdir(const char *path, mode_t mode)
     return 0;
 }
 
+int unionfs_rmdir(const char *path)
+{
+    char upper[PATH_MAX];
+    upper_path(path, upper);
+
+    if (access(upper, F_OK) != 0)
+        return -ENOENT;
+
+    int res = rmdir(upper);
+    if (res == -1)
+        return -errno;
+
+    return 0;
+}
