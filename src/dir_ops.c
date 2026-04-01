@@ -82,3 +82,15 @@ int unionfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     return 0;
 }
 
+int unionfs_mkdir(const char *path, mode_t mode)
+{
+    char upper[PATH_MAX];
+    upper_path(path, upper);
+
+    int res = mkdir(upper, mode);
+    if (res == -1)
+        return -errno;
+
+    return 0;
+}
+
