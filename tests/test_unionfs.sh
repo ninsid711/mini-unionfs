@@ -39,9 +39,15 @@ else
     echo -e "${RED}FAILED${NC}"
 fi
 
+
 # Test 3: Whiteout (requires Member 4)
 echo -n "Test 3: Whiteout mechanism... "
-echo -e "${RED}SKIPPED (Member 4 not done)${NC}"
+rm "$MOUNT_DIR/delete_me.txt"
+if [ -f "$UPPER_DIR/.wh.delete_me.txt" ] && [ ! -f "$MOUNT_DIR/delete_me.txt" ]; then
+    echo -e "${GREEN}PASSED${NC}"
+else
+    echo -e "${RED}FAILED${NC}"
+fi
 
 # Teardown
 fusermount -u "$MOUNT_DIR" 2>/dev/null
