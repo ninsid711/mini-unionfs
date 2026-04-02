@@ -4,8 +4,6 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <limits.h>
-#include <stdio.h>
-#include <unistd.h>
 
 static int already_seen(char **seen, int count, const char *name) {
     for (int i = 0; i < count; i++) {
@@ -33,8 +31,8 @@ int unionfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     char *seen[1024];
     int count = 0;
 
-    filler(buf, ".", NULL, 0, 0);
-    filler(buf, "..", NULL, 0, 0);
+    filler(buf, ".", NULL, 0);
+    filler(buf, "..", NULL, 0);
 
     /* READ UPPER */
     dp = opendir(upper);
@@ -44,7 +42,7 @@ int unionfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
             if (is_whiteout_name(entry->d_name))
                 continue;
 
-            filler(buf, entry->d_name, NULL, 0, 0);
+            filler(buf, entry->d_name, NULL, 0);
 
             seen[count++] = strdup(entry->d_name);
         }
@@ -72,7 +70,7 @@ int unionfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
             if (access(wh_full, F_OK) == 0)
                 continue;
 
-            filler(buf, entry->d_name, NULL, 0, 0);
+            filler(buf, entry->d_name, NULL, 0);
         }
         closedir(dp);
     }
