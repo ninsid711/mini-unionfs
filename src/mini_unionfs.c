@@ -72,6 +72,10 @@ void whiteout_path(const char *path, char *out)
         return;
     }
 
+    if (strcmp(dir, "/") == 0)
+    snprintf(out, PATH_MAX, "%s/.wh.%s",
+             UNIONFS_DATA->upper_dir, base);
+    else
     snprintf(out, PATH_MAX, "%s%s/.wh.%s",
              UNIONFS_DATA->upper_dir, dir, base);
 }
@@ -433,10 +437,10 @@ static struct fuse_operations unionfs_oper = {
     /* .readdir = unionfs_readdir, */
 
     /* -- MEMBER 4: uncomment and implement these -- */
-    /* .create  = unionfs_create, */
-    /* .unlink  = unionfs_unlink, */
-    /* .mkdir   = unionfs_mkdir,  */
-    /* .rmdir   = unionfs_rmdir,  */
+    .create  = unionfs_create,
+    .unlink  = unionfs_unlink,
+    .mkdir   = unionfs_mkdir,
+    .rmdir   = unionfs_rmdir,
 };
 
 
