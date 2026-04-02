@@ -65,4 +65,11 @@ int unionfs_mkdir(const char *path, mode_t mode);
 
 int unionfs_rmdir(const char *path);
 
+/*
+ File operations (Member 4)
+ */
+int unionfs_create(const char *path, mode_t mode, struct fuse_file_info *fi);
+int unionfs_unlink(const char *path);
+
+
 #endif /* MINI_UNIONFS_H */
