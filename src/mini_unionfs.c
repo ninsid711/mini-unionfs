@@ -437,10 +437,10 @@ static struct fuse_operations unionfs_oper = {
     /* .readdir = unionfs_readdir, */
 
     /* -- MEMBER 4: uncomment and implement these -- */
-    .create  = unionfs_create, 
+    .create  = unionfs_create,
     .unlink  = unionfs_unlink,
-    /* .mkdir   = unionfs_mkdir,  */
-    /* .rmdir   = unionfs_rmdir,  */
+    .mkdir   = unionfs_mkdir,
+    .rmdir   = unionfs_rmdir,
 };
 
 
