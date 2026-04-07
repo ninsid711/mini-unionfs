@@ -6,7 +6,7 @@ CFLAGS  = -Wall -Wextra -g $(shell pkg-config --cflags fuse3)
 LDFLAGS = $(shell pkg-config --libs fuse3)
 
 TARGET  = mini_unionfs
-SRC     = src/mini_unionfs.c src/dir_ops.c src/file_ops.c
+SRC     = src/mini_unionfs.c src/dir_ops.c src/file_ops.c                                                                                                                                                    
 
 # ── Build ──────────────────────────────────────────────────────
 $(TARGET): $(SRC) src/mini_unionfs.h
