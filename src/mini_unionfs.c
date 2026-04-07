@@ -430,7 +430,7 @@ static struct fuse_operations unionfs_oper = {
     .release    = unionfs_release,
 
     /* -- MEMBER 3: uncomment and implement this -- */
-    /* .readdir = unionfs_readdir, */
+    .readdir = unionfs_readdir, 
 
     /* -- MEMBER 4: uncomment and implement these -- */
     .create  = unionfs_create, 
