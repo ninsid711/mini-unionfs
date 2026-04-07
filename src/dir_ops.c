@@ -1,4 +1,5 @@
 #include "mini_unionfs.h"
+
 #include <dirent.h>
 #include <string.h>
 #include <errno.h>
@@ -7,7 +8,9 @@
 #include <stdio.h>
 #include <unistd.h>
 
-
+/* ---------------------------------------------------------------
+ * Helper: check if file already exists in seen list
+ * ------------------------------------------------------------- */
 static int already_seen(char **seen, int count, const char *name) {
     for (int i = 0; i < count; i++) {
         if (strcmp(seen[i], name) == 0)
@@ -16,11 +19,16 @@ static int already_seen(char **seen, int count, const char *name) {
     return 0;
 }
 
+/* ---------------------------------------------------------------
+ * readdir: merge upper + lower directories
+ * ------------------------------------------------------------- */
 int unionfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
-                   off_t offset, struct fuse_file_info *fi)
+                   off_t offset, struct fuse_file_info *fi,
+                   enum fuse_readdir_flags flags)
 {
     (void) offset;
     (void) fi;
+    (void) flags;
 
     DIR *dp;
     struct dirent *entry;
@@ -34,42 +42,58 @@ int unionfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     char *seen[1024];
     int count = 0;
 
+    /* Always include . and .. */
     filler(buf, ".", NULL, 0, 0);
     filler(buf, "..", NULL, 0, 0);
 
-    /* READ UPPER */
+    /* ===================== READ UPPER ===================== */
     dp = opendir(upper);
     if (dp != NULL) {
         while ((entry = readdir(dp)) != NULL) {
 
+            /* Skip . and .. */
+            if (strcmp(entry->d_name, ".") == 0 ||
+                strcmp(entry->d_name, "..") == 0)
+                continue;
+
+            /* Skip whiteout files */
             if (is_whiteout_name(entry->d_name))
                 continue;
 
             filler(buf, entry->d_name, NULL, 0, 0);
 
-            seen[count++] = strdup(entry->d_name);
+            /* Track seen entries */
+            if (count < 1024) {
+                char *dup = strdup(entry->d_name);
+                if (dup)
+                    seen[count++] = dup;
+            }
         }
         closedir(dp);
     }
 
-    /* READ LOWER */
+    /* ===================== READ LOWER ===================== */
     dp = opendir(lower);
     if (dp != NULL) {
         while ((entry = readdir(dp)) != NULL) {
 
+            /* Skip . and .. */
             if (strcmp(entry->d_name, ".") == 0 ||
                 strcmp(entry->d_name, "..") == 0)
                 continue;
 
+            /* Skip duplicates (already in upper) */
             if (already_seen(seen, count, entry->d_name))
                 continue;
 
-            char wh[PATH_MAX];
-            whiteout_path(path, wh);
+            /* Build correct path for whiteout */
+            char temp[PATH_MAX];
+            snprintf(temp, PATH_MAX, "%s/%s", path, entry->d_name);
 
             char wh_full[PATH_MAX];
-            snprintf(wh_full, PATH_MAX, "%s/%s", wh, entry->d_name);
+            whiteout_path(temp, wh_full);
 
+            /* If whiteout exists → hide */
             if (access(wh_full, F_OK) == 0)
                 continue;
 
@@ -78,6 +102,7 @@ int unionfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
         closedir(dp);
     }
 
+    /* Cleanup */
     for (int i = 0; i < count; i++) {
         free(seen[i]);
     }
@@ -85,6 +110,9 @@ int unionfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     return 0;
 }
 
+/* ---------------------------------------------------------------
+ * mkdir: create directory in upper layer only
+ * ------------------------------------------------------------- */
 int unionfs_mkdir(const char *path, mode_t mode)
 {
     char upper[PATH_MAX];
@@ -97,6 +125,9 @@ int unionfs_mkdir(const char *path, mode_t mode)
     return 0;
 }
 
+/* ---------------------------------------------------------------
+ * rmdir: remove directory from upper layer only
+ * ------------------------------------------------------------- */
 int unionfs_rmdir(const char *path)
 {
     char upper[PATH_MAX];
